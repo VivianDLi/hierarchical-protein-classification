@@ -1,4 +1,4 @@
-# l65_vivian_linus
+# hierarchical-protein-classification
 
 ## Training
 Before training, make sure your `.env` file is setup and `proteinworkshop` exists.
