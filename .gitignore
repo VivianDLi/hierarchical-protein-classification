@@ -171,3 +171,5 @@ scripts/
 
 # WANDB
 wandb/
+sweeps/
+sweeps

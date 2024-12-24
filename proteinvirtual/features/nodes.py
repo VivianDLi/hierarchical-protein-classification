@@ -36,7 +36,10 @@ def fps_torch(pos: torch.tensor, k: int = 1, select: int = 0) -> torch.tensor:
         distances[selected] = - math.inf
 
     return pos[selected]
-    
+
+
+def fps_torch_batch(pos: torch.tensor, k: int = 1, select: int = 0):
+    pass
 
 def compute_random_uniform(num_nodes, basis_pos, basis_batch=None):
     if basis_batch is None:
