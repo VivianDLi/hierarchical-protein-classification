@@ -7,7 +7,7 @@ virtual_nodes:
       type: fps
       basis: real
   tertiary:
-    p_nodes: 0.6 
+    p_nodes: 0.36
     positions:
       type: fps
       basis: secondary
@@ -23,7 +23,6 @@ edge_types: # Custom types for different edges
       - knn_1
   intra_level: 
     pairs: [[secondary, secondary], [tertiary, tertiary]]
-    bidirectional: True
     strategies:
       - knn_16
 scalar_node_features:

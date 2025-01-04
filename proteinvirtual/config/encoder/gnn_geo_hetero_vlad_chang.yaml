@@ -1,0 +1,20 @@
+_target_: "proteinvirtual.models.graph_encoders.gnn.VirtualGNN"
+num_layers: 6 # Number of message passing layers
+emb_dim: 256 # Dimension of the node embeddings
+layer_types: # Custom message passing layers per each hierarchy
+  r_to_r:
+    pairs: [[real, real]]
+    layers: [EGNN]
+  inter_level:
+    pairs: [[real, secondary], [secondary, real], [secondary, tertiary], [tertiary, secondary]]
+    layers: [EGNN, EGNN, EGNN, EGNN]
+  intra_level: 
+    pairs: [[secondary, secondary], [tertiary, tertiary]]
+    layers: [EGNN, EGNN]
+activation: relu
+aggr: "sum"
+pool: "mean"
+dropout: 0.1
+pos_features: True
+edge_features: False
+residual: True
