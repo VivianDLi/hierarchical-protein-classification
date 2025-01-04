@@ -130,30 +130,17 @@ class VirtualSchNet(SchNet):
             for node_name in batch.x_dict
         }
 
-        u_dict = {
-            edge_name: batch.edge_index_dict[edge_name][0]
-            for edge_name in batch.edge_index_dict
-        }
-        v_dict = {
-            edge_name: batch.edge_index_dict[edge_name][1]
-            for edge_name in batch.edge_index_dict
-        }
-        # only compute edge weights for nodes with positions
-        edge_weight_dict = {
-            edge_name: (
-                batch.pos_dict[edge_name[0]][u_dict[edge_name]]
-                - batch.pos_dict[edge_name[2]][v_dict[edge_name]]
-            ).norm(dim=-1)
-            for edge_name in batch.edge_index_dict
-            if (
-                edge_name[0] in batch.pos_dict
-                and edge_name[2] in batch.pos_dict
-            )
-        }
-        edge_attr_dict = {
-            edge_name: self.distance_expansion(edge_weight_dict[edge_name])
-            for edge_name in edge_weight_dict
-        }
+        edge_weight_dict = {}
+        edge_attr_dict = {}
+        for edge_name in batch.edge_index_dict:
+            n_from, _, n_to = edge_name
+            if n_from in batch.pos_dict and n_to in batch.pos_dict:
+                u_list = batch.edge_index_dict[edge_name][0]
+                v_list = batch.edge_index_dict[edge_name][1]
+                edge_weight = (batch.pos_dict[n_from][u_list]-batch.pos_dict[n_to][v_list]).norm(dim=-1)
+                edge_attr = self.distance_expansion(edge_weight)
+                edge_weight_dict[edge_name] = edge_weight
+                edge_attr_dict[edge_name] = edge_attr
 
         for interaction in self.interactions:
             h_update_dict = interaction(
@@ -163,15 +150,9 @@ class VirtualSchNet(SchNet):
                 node_name: h_dict[node_name] + h_update_dict[node_name]
                 for node_name in h_update_dict
             }
-
+        
         h_dict = {
-            node_name: self.lin1(h_dict[node_name]) for node_name in h_dict
-        }
-        h_dict = {
-            node_name: self.act(h_dict[node_name]) for node_name in h_dict
-        }
-        h_dict = {
-            node_name: self.lin2(h_dict[node_name]) for node_name in h_dict
+            node_name: self.lin2(self.act(self.lin1(h_dict[node_name]))) for node_name in h_dict
         }
 
         return EncoderOutput(
