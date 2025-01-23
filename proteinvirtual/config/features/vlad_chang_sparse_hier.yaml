@@ -1,0 +1,43 @@
+_target_: proteinvirtual.features.factory.VirtualProteinFeaturiser
+representation: CA
+virtual_nodes:
+  vnode_0:
+    p_nodes: 0.6
+    positions:
+      type: fps
+      basis: real
+  vnode_1:
+    p_nodes: 0.36
+    positions:
+      type: fps
+      basis: vnode_0
+edge_types: # Custom types for different edges
+  r_to_r:
+    paris: [[real, real]]
+    strategies:
+      - knn_16
+  inter:
+    pairs: [[real, vnode_0], [vnode_0, vnode_1]]
+    bidirectional: True
+    strategies:
+      - knn_1
+  intra: 
+    pairs: [[vnode_0, vnode_0], [vnode_1, vnode_1]]
+    strategies:
+      - knn_16
+scalar_node_features:
+  real:
+    - amino_acid_one_hot
+    - sequence_positional_encoding
+    - alpha
+    - kappa
+    - dihedrals
+  vnode_0:
+    - zero_16
+  vnode_1:
+    - zero_16
+vector_node_features: {}
+scalar_edge_features:
+  _all_:
+    - edge_distance
+vector_edge_features: {}
