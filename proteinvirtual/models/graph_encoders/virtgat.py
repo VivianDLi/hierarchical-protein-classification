@@ -74,7 +74,7 @@ class VirtualGAT(GAT):
         norm_kwargs: Optional[Dict[str, Any]] = None,
         jk: Optional[str] = None,
         v2: bool = None,
-        max_hierarchies: int = 1,
+        max_levels: int = 1,
         pool: str = "mean",
         **kwargs
     ):
@@ -93,13 +93,13 @@ class VirtualGAT(GAT):
                          jk=jk,
                          **kwargs)
         self.num_layers = num_layers
-        self.max_hierarchies = max_hierarchies
-        self.convs_up = ModuleList(ModuleList() for _ in range(num_layers))
-        self.convs_down = ModuleList(ModuleList() for _ in range(num_layers))
-        self.convs_intra = ModuleList(ModuleList() for _ in range(num_layers))
-        self.norms_up = ModuleList(ModuleList() for _ in range(num_layers))
-        self.norms_down = ModuleList(ModuleList() for _ in range(num_layers))
-        self.norms_intra = ModuleList(ModuleList() for _ in range(num_layers))
+        self.max_levels = max_levels
+        self.convs_up =     ModuleList(ModuleList() for _ in range(num_layers-1))
+        self.convs_down =   ModuleList(ModuleList() for _ in range(num_layers-1))
+        self.convs_intra =  ModuleList(ModuleList() for _ in range(num_layers-1))
+        self.norms_up =     ModuleList(ModuleList() for _ in range(num_layers-1))
+        self.norms_down =   ModuleList(ModuleList() for _ in range(num_layers-1))
+        self.norms_intra =  ModuleList(ModuleList() for _ in range(num_layers-1))
         self.virtual_in_channels = virtual_in_channels
         self.pool = get_aggregation(pool)
         
@@ -114,38 +114,31 @@ class VirtualGAT(GAT):
         if norm_layer is None:
             norm_layer = torch.nn.Identity()
         
-        for idx_layer in range(num_layers):
+        for idx_layer in range(num_layers-1):
             if idx_layer > 0:
                 virtual_in_channels = hidden_channels
-            for idx_hierarchy in range(max_hierarchies-1):
+            for idx_level in range(max_levels):
                 self.convs_up[idx_layer].append(self.init_conv(
                     in_channels=(hidden_channels, virtual_in_channels),
                     out_channels=hidden_channels,
                     **kwargs
                 ))
-                # self.norms_up[idx_layer].append(deepcopy(norm_layer))
                 
                 self.convs_intra[idx_layer].append(self.init_conv(
                     in_channels=hidden_channels,
                     out_channels=hidden_channels,
                     **kwargs
                 ))
-                # self.norms_intra.append(deepcopy(norm_layer))
                 
+                if idx_layer == num_layers-1 and idx_level==0:
+                    out_ch = out_channels
+                else:
+                    out_ch = hidden_channels
                 self.convs_down[idx_layer].append(self.init_conv(
                     in_channels=(hidden_channels, hidden_channels),
-                    out_channels=hidden_channels if idx_layer == num_layers-1 else out_channels,
+                    out_channels=out_ch,
                     **kwargs
                 ))
-                # self.norms_down[idx_layer].append(deepcopy(norm_layer))
-        
-            # # Final hierarchy
-            # self.convs_intra[idx_layer].append(self.init_conv(
-            #     in_channels=hidden_channels, 
-            #     out_channels=hidden_channels,
-            #     **kwargs
-            # ))
-            # self.norms_intra.append(deepcopy(norm_layer))
     
     @property
     def required_batch_attributes(self) -> Set[str]:
@@ -155,87 +148,84 @@ class VirtualGAT(GAT):
                 batch: Union[Batch, ProteinBatch]):
         xs: List[Tensor] = []
         for idx_layer in range(self.num_layers):
-            skip_connect_stack = []
             # convolution: real nodes
             node_features = batch[self.__rnode_name]
             edge_name = self.__rnode_name, self.__redge_name, self.__rnode_name
             edge_features = batch[edge_name]
             x = adaptive_conv(self.convs[idx_layer],
-                              node_features,
-                              edge_features,
-                              supports_edge_weight=False,
-                              supports_edge_attr=True,
-                              supports_pos=False)
+                            node_features,
+                            edge_features,
+                            supports_edge_weight=False,
+                            supports_edge_attr=True,
+                            supports_pos=False)
             x = self.act(x)
-            # x = self.norms[idx_layer](x, node_features.batch, batch.batch_size)
-            batch[self.__rnode_name].x = x
-            prev_node_name = self.__rnode_name
-            max_hierach = -1
-            # Up the hierarchy
-            for idx_hierach in range(self.max_hierarchies):
-                node_name = self.__vnode_prefix+str(idx_hierach)
-                if not hasattr(batch, node_name):
-                    break
+            if idx_layer < self.num_layers-1:
+                # x = self.norms[idx_layer](x, node_features.batch, batch.batch_size)
+                batch[self.__rnode_name].x = x
+                prev_node_name = self.__rnode_name
+                max_level = -1
+                # Up the hierarchy
+                for idx_level in range(self.max_levels):
+                    node_name = self.__vnode_prefix+str(idx_level)
+                    if node_name not in batch.node_types:
+                        break
+                    
+                    vnode_features = batch[prev_node_name], batch[node_name]
+                    edge_name = prev_node_name, self.__up_vedge_name, node_name
+                    vedge_features = batch[edge_name]
+                    delta = adaptive_conv(self.convs_up[idx_layer][idx_level],
+                                    vnode_features,
+                                    vedge_features,
+                                    supports_edge_weight=False,
+                                    supports_edge_attr=True,
+                                    supports_pos=False)
+                    if idx_layer == 0:
+                        x = delta
+                    else:
+                        x = batch[node_name].x + delta
+                    x = self.act(x)
+                    
+                    vnode_features = batch[node_name]
+                    vnode_features.x = x
+                    edge_name = node_name, self.__intra_vedge_name, node_name
+                    vedge_features = batch[edge_name]
+                    x = x + adaptive_conv(self.convs_intra[idx_layer][idx_level],
+                                    vnode_features,
+                                    vedge_features,
+                                    supports_edge_weight=False,
+                                    supports_edge_attr=True,
+                                    supports_pos=False)
+                    x = self.act(x)
+                    batch[node_name].x = x
+                    prev_node_name = node_name
+                    max_level = idx_level
                 
-                vnode_features = batch[prev_node_name], batch[node_name]
-                edge_name = prev_node_name, self.__up_vedge_name, node_name
-                vedge_features = batch[edge_name]
-                x = adaptive_conv(self.convs_up[idx_layer][idx_hierach],
-                                  vnode_features,
-                                  vedge_features,
-                                  supports_edge_weight=False,
-                                  supports_edge_attr=True,
-                                  supports_pos=False)
-                x = self.act(x)
-                # x = self.norms_up[idx_layer][idx_hierach](
-                #     x, node_features[1].batch,
-                #     batch.batch_size
-                # )
+                # Down the hierarchy
+                for idx_level in range(max_level, -1, -1):
+                    next_node_name = self.__vnode_prefix+str(idx_level-1) if idx_level > 0 else self.__rnode_name
+                    node_name = self.__vnode_prefix+str(idx_level) 
+                    vnode_features = batch[node_name], batch[next_node_name]
+                    edge_name = node_name, self.__down_vedge_name, next_node_name
+                    vedge_features = batch[edge_name]
+                    delta = adaptive_conv(self.convs_down[idx_layer][idx_level],
+                                    vnode_features,
+                                    vedge_features,
+                                    supports_edge_weight=False,
+                                    supports_edge_attr=True,
+                                    supports_pos=False)
+                    if idx_layer == self.num_layers-1:
+                        x = delta
+                    else:
+                        x = batch[next_node_name].x + delta
+                    x = self.act(x)
+                    batch[next_node_name].x = x
                 
-                vnode_features = batch[node_name]
-                vnode_features.x = x
-                edge_name = node_name, self.__intra_vedge_name, node_name
-                vedge_features = batch[edge_name]
-                x = adaptive_conv(self.convs_intra[idx_layer][idx_hierach],
-                                  vnode_features,
-                                  vedge_features,
-                                  supports_edge_weight=False,
-                                  supports_edge_attr=True,
-                                  supports_pos=False)
-                x = self.act(x)
-                # x = self.norms_intra[idx_layer][idx_hierach](
-                #     x, node_features.batch,
-                #     batch.batch_size
-                # )
-                batch[node_name].x = x
-                prev_node_name = node_name
-                max_hierach = idx_hierach
+                # Wrap things up
+                x = batch[self.__rnode_name].x
             
-            # Down the hierarchy
-            for idx_hierach in range(max_hierach, -1, -1):
-                next_node_name = self.__vnode_prefix+str(idx_hierach-1) if idx_hierach > 0 else self.__rnode_name
-                node_name = self.__vnode_prefix+str(idx_hierach) 
-                vnode_features = batch[node_name], batch[next_node_name]
-                edge_name = node_name, self.__down_vedge_name, next_node_name
-                vedge_features = batch[edge_name]
-                x = adaptive_conv(self.convs_down[idx_layer][idx_hierach],
-                                  vnode_features,
-                                  vedge_features,
-                                  supports_edge_weight=False,
-                                  supports_edge_attr=True,
-                                  supports_pos=False)
-                x = self.act(x)
-                # x = self.norms_intra[idx_layer][idx_hierach](
-                #     x, node_features[0].batch,
-                #     batch.batch_size
-                # )
-                batch[next_node_name].x = x
-            
-            # Wrap things up
-            x = batch[self.__rnode_name].x
             x = self.dropout(x)
             if hasattr(self, 'jk'):
-                    xs.append(x)
+                xs.append(x)
             
         x = self.jk(xs) if hasattr(self, 'jk') else x
         x = self.lin(x) if hasattr(self, 'lin') else x
