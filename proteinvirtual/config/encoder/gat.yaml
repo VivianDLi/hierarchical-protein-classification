@@ -1,16 +1,14 @@
-_target_: proteinvirtual.models.graph_encoders.virtgat.VirtualGAT
+_target_: proteinvirtual.models.graph_encoders.virtgat.RealGAT
 num_layers: 6
 in_channels: -1
-virtual_in_channels: 16
 hidden_channels: 512
 out_channels: 512
 dropout: 0.3
 v2: True
 act: leakyrelu
 norm: layernorm
-max_levels: 2
-edge_dim: 1
 
 # GATConv Parameters
 # residual: True
+edge_dim: 1
 add_self_loops: False

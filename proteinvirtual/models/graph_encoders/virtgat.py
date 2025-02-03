@@ -28,7 +28,7 @@ def adaptive_conv(conv,
     edge_index = edge_features.edge_index
     edge_weight = getattr(edge_features, "edge_weight", None)
     edge_attr = getattr(edge_features, "edge_attr", None)
-    
+
     if supports_pos:
         if supports_edge_weight and supports_edge_attr:
             out = conv(x, edge_index, pos=pos, edge_weight=edge_weight,
@@ -52,6 +52,40 @@ def adaptive_conv(conv,
     return out
 
 
+
+class RealGAT(GAT):
+    def __init__(self, pool: str = "mean", **kwargs):
+        super(GAT, self).__init__(**kwargs)
+        self.pool = get_aggregation(pool)
+        
+    @property
+    def required_batch_attributes(self) -> Set[str]:
+        return {}
+        
+    def forward(self,
+                batch):
+        node_features = batch['real']
+        edge_features = batch['real', 'r_to_r', 'real']
+        x = node_features.x
+        edge_index = edge_features.edge_index
+        edge_weight = getattr(edge_features, "edge_weight", None)
+        edge_attr = getattr(edge_features, "edge_attr", None)
+        x = super(GAT, self).forward(
+            x, edge_index,
+            edge_weight=edge_weight,
+            edge_attr=edge_attr,
+            batch=node_features.batch,
+        )
+        return EncoderOutput(
+            {
+                "node_embedding": x,
+                "graph_embedding": self.pool(
+                    x, node_features.batch
+                )
+            }
+        )
+
+
 class VirtualGAT(GAT):
     __rnode_name = "real"
     __redge_name = "r_to_r"
@@ -60,7 +94,7 @@ class VirtualGAT(GAT):
     __up_vedge_name = "inter"
     __down_vedge_name = "inter"
     def __init__(
-        self, 
+        self,
         in_channels: int,
         virtual_in_channels: int,
         hidden_channels: int,
@@ -94,26 +128,24 @@ class VirtualGAT(GAT):
                          **kwargs)
         self.num_layers = num_layers
         self.max_levels = max_levels
-        self.convs_up =     ModuleList(ModuleList() for _ in range(num_layers-1))
-        self.convs_down =   ModuleList(ModuleList() for _ in range(num_layers-1))
-        self.convs_intra =  ModuleList(ModuleList() for _ in range(num_layers-1))
-        self.norms_up =     ModuleList(ModuleList() for _ in range(num_layers-1))
-        self.norms_down =   ModuleList(ModuleList() for _ in range(num_layers-1))
-        self.norms_intra =  ModuleList(ModuleList() for _ in range(num_layers-1))
+        self.convs_up =    ModuleList(ModuleList() for _ in range(num_layers-1))
+        self.convs_down =  ModuleList(ModuleList() for _ in range(num_layers-1))
+        self.convs_intra = ModuleList(ModuleList() for _ in range(num_layers-1))
+        self.norms_up =    ModuleList(ModuleList() for _ in range(num_layers-1))
+        self.norms_down =  ModuleList(ModuleList() for _ in range(num_layers-1))
+        self.norms_intra = ModuleList(ModuleList() for _ in range(num_layers-1))
         self.virtual_in_channels = virtual_in_channels
         self.pool = get_aggregation(pool)
-        
+
         if isinstance(in_channels, tuple):
             raise Exception("in_channel cannot be a tuple: bipartite input not supported.")
-        
+
         norm_layer = normalization_resolver(
             norm,
             hidden_channels,
             **(norm_kwargs or {}),
-        )
-        if norm_layer is None:
-            norm_layer = torch.nn.Identity()
-        
+        ) or torch.nn.Identity()
+
         for idx_layer in range(num_layers-1):
             if idx_layer > 0:
                 virtual_in_channels = hidden_channels
@@ -123,27 +155,26 @@ class VirtualGAT(GAT):
                     out_channels=hidden_channels,
                     **kwargs
                 ))
-                
+
                 self.convs_intra[idx_layer].append(self.init_conv(
                     in_channels=hidden_channels,
                     out_channels=hidden_channels,
                     **kwargs
                 ))
-                
-                if idx_layer == num_layers-1 and idx_level==0:
-                    out_ch = out_channels
-                else:
-                    out_ch = hidden_channels
+
                 self.convs_down[idx_layer].append(self.init_conv(
                     in_channels=(hidden_channels, hidden_channels),
-                    out_channels=out_ch,
+                    out_channels=hidden_channels,
                     **kwargs
                 ))
-    
+                self.norms_up[idx_layer].append(deepcopy(norm_layer))
+                self.norms_intra[idx_layer].append(deepcopy(norm_layer))
+                self.norms_down[idx_layer].append(deepcopy(norm_layer))
+
     @property
     def required_batch_attributes(self) -> Set[str]:
         return {}
-    
+
     def forward(self,
                 batch: Union[Batch, ProteinBatch]):
         xs: List[Tensor] = []
@@ -152,12 +183,19 @@ class VirtualGAT(GAT):
             node_features = batch[self.__rnode_name]
             edge_name = self.__rnode_name, self.__redge_name, self.__rnode_name
             edge_features = batch[edge_name]
-            x = adaptive_conv(self.convs[idx_layer],
+            delta = adaptive_conv(self.convs[idx_layer],
                             node_features,
                             edge_features,
                             supports_edge_weight=False,
                             supports_edge_attr=True,
                             supports_pos=False)
+            if not isinstance(self.norms[idx_layer], torch.nn.Identity):
+                delta = self.norms[idx_layer](delta,
+                                              batch=node_features.batch)
+            if self.convs[idx_layer].in_channels == self.convs[idx_layer].out_channels:
+                x = x + delta
+            else:
+                x = delta
             x = self.act(x)
             if idx_layer < self.num_layers-1:
                 # x = self.norms[idx_layer](x, node_features.batch, batch.batch_size)
@@ -169,7 +207,7 @@ class VirtualGAT(GAT):
                     node_name = self.__vnode_prefix+str(idx_level)
                     if node_name not in batch.node_types:
                         break
-                    
+
                     vnode_features = batch[prev_node_name], batch[node_name]
                     edge_name = prev_node_name, self.__up_vedge_name, node_name
                     vedge_features = batch[edge_name]
@@ -179,31 +217,36 @@ class VirtualGAT(GAT):
                                     supports_edge_weight=False,
                                     supports_edge_attr=True,
                                     supports_pos=False)
+                    delta = self.norms_up[idx_layer][idx_level](delta, 
+                                                                batch=batch[node_name].batch)
                     if idx_layer == 0:
                         x = delta
                     else:
                         x = batch[node_name].x + delta
                     x = self.act(x)
-                    
+
                     vnode_features = batch[node_name]
                     vnode_features.x = x
                     edge_name = node_name, self.__intra_vedge_name, node_name
                     vedge_features = batch[edge_name]
-                    x = x + adaptive_conv(self.convs_intra[idx_layer][idx_level],
-                                    vnode_features,
-                                    vedge_features,
-                                    supports_edge_weight=False,
-                                    supports_edge_attr=True,
-                                    supports_pos=False)
+                    delta = adaptive_conv(self.convs_intra[idx_layer][idx_level],
+                                          vnode_features,
+                                          vedge_features,
+                                          supports_edge_weight=False,
+                                          supports_edge_attr=True,
+                                          supports_pos=False)
+                    delta = self.norms_intra[idx_layer][idx_level](delta,
+                                                                   batch=batch[node_name].batch)
+                    x = x + delta
                     x = self.act(x)
                     batch[node_name].x = x
                     prev_node_name = node_name
                     max_level = idx_level
-                
+
                 # Down the hierarchy
                 for idx_level in range(max_level, -1, -1):
                     next_node_name = self.__vnode_prefix+str(idx_level-1) if idx_level > 0 else self.__rnode_name
-                    node_name = self.__vnode_prefix+str(idx_level) 
+                    node_name = self.__vnode_prefix+str(idx_level)
                     vnode_features = batch[node_name], batch[next_node_name]
                     edge_name = node_name, self.__down_vedge_name, next_node_name
                     vedge_features = batch[edge_name]
@@ -213,20 +256,22 @@ class VirtualGAT(GAT):
                                     supports_edge_weight=False,
                                     supports_edge_attr=True,
                                     supports_pos=False)
+                    delta = self.norms_down[idx_layer][idx_level](delta,
+                                                                  batch=batch[next_node_name].batch)
                     if idx_layer == self.num_layers-1:
                         x = delta
                     else:
                         x = batch[next_node_name].x + delta
                     x = self.act(x)
                     batch[next_node_name].x = x
-                
+
                 # Wrap things up
                 x = batch[self.__rnode_name].x
-            
+
             x = self.dropout(x)
             if hasattr(self, 'jk'):
                 xs.append(x)
-            
+
         x = self.jk(xs) if hasattr(self, 'jk') else x
         x = self.lin(x) if hasattr(self, 'lin') else x
         return EncoderOutput(
