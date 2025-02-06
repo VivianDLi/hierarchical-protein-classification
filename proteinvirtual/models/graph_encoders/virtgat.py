@@ -11,6 +11,7 @@ from graphein.protein.tensor.data import ProteinBatch
 from torch_geometric.nn.resolver import normalization_resolver
 from proteinworkshop.types import EncoderOutput
 from proteinworkshop.models.utils import get_aggregation
+from proteinvirtual.models.utils import WeightedPool
 
 
 def adaptive_conv(conv,
@@ -135,7 +136,10 @@ class VirtualGAT(GAT):
         self.norms_down =  ModuleList(ModuleList() for _ in range(num_layers-1))
         self.norms_intra = ModuleList(ModuleList() for _ in range(num_layers-1))
         self.virtual_in_channels = virtual_in_channels
-        self.pool = get_aggregation(pool)
+        if pool.strip().lower() == "weighted":
+            self.pool = WeightedPool(emb_dim=out_channels)
+        else:
+            self.pool = get_aggregation(pool)
 
         if isinstance(in_channels, tuple):
             raise Exception("in_channel cannot be a tuple: bipartite input not supported.")
@@ -174,7 +178,7 @@ class VirtualGAT(GAT):
     @property
     def required_batch_attributes(self) -> Set[str]:
         return {}
-
+    
     def forward(self,
                 batch: Union[Batch, ProteinBatch]):
         xs: List[Tensor] = []
